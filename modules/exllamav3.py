@@ -135,124 +135,143 @@ class Exllamav3Model:
         )
         global_allocator.next_token_index = FIRST_MM_EMBEDDING_INDEX
 
-        plan = build_plan(shared.args)
-        logger.info("ExLlamaV3 launch parameters:\n" + format_plan(plan, path_to_model.name))
-        for note in plan['notes']:
-            logger.warning(note)
-
-        config = Config.from_directory(str(path_to_model), layer_map=plan['config'].get('layer_map'))
-        apply_config_options(config, plan)
-
-        model = Model.from_config(config, swa_full=plan['swa_full'])
-
-        max_tokens = plan['cache_tokens']
-        layer_type = CacheLayer_fp16 if plan['cache']['layer_type'] == 'fp16' else CacheLayer_quant
-        cache_kwargs = {k: v for k, v in plan['cache'].items() if k not in ('layer_type', 'max_num_tokens', 'max_history')}
-        max_history = plan['cache'].get('max_history', 0)
-
-        load_params = dict(plan['model_load'])
-
-        # Load vision and draft before the main model so autosplit
-        # accounts for their VRAM usage.
-
-        # Load vision model component (ExLlamaV3 native)
+        model = None
         vision_model = None
-        if "vision" not in config.model_classes:
-            logger.info("No vision component in model config. Skipping multimodal setup.")
-        elif not plan['load_vision']:
-            logger.info("Vision component detected but disabled by no-vision. Skipping multimodal setup.")
-        else:
-            logger.info("Vision component detected in model config. Attempting to load...")
-            try:
-                vision_model = Model.from_config(config, component="vision")
-                vision_model.load(**plan['vision_load'])
-                logger.info("Vision model loaded successfully.")
-            except Exception as e:
-                logger.warning(f"Vision model loading failed (multimodal disabled): {e}")
-
-        # Build the draft model for speculative decoding. It is only instantiated
-        # here; the caches are created once its draft size is known, and loading
-        # happens below.
         draft_model = None
-        draft_cache = None
-        draft_spec = plan['draft']
 
-        draft_load_params = dict(draft_spec['load'])
+        try:
+            plan = build_plan(shared.args)
+            logger.info("ExLlamaV3 launch parameters:\n" + format_plan(plan, path_to_model.name))
+            for note in plan['notes']:
+                logger.warning(note)
 
-        if draft_spec['mtp'] and "mtp" not in config.model_classes:
-            logger.warning("exl3-mtp is set but this model has no MTP head. Speculative decoding disabled.")
-        elif draft_spec['mtp']:
-            logger.info("Using the MTP head of the main model for speculative decoding.")
-            try:
-                draft_model = Model.from_config(config, swa_full=plan['swa_full'], component="mtp")
-            except Exception as e:
-                logger.warning(f"Failed to build the MTP head (speculative decoding disabled): {e}")
-                draft_model = None
-        elif draft_spec['model_draft']:
-            logger.info(f"Loading draft model for speculative decoding: {draft_spec['model_draft']}")
+            config = Config.from_directory(str(path_to_model), layer_map=plan['config'].get('layer_map'))
+            apply_config_options(config, plan)
 
-            draft_path = Path(draft_spec['model_draft'])
-            if not draft_path.is_dir():
-                draft_path = Path(f'{shared.args.model_dir}') / Path(draft_spec['model_draft'])
+            model = Model.from_config(config, swa_full=plan['swa_full'])
 
-            if not draft_path.is_dir():
-                logger.warning(f"Draft model not found at {draft_path}, speculative decoding disabled.")
+            max_tokens = plan['cache_tokens']
+            layer_type = CacheLayer_fp16 if plan['cache']['layer_type'] == 'fp16' else CacheLayer_quant
+            cache_kwargs = {k: v for k, v in plan['cache'].items() if k not in ('layer_type', 'max_num_tokens', 'max_history')}
+            max_history = plan['cache'].get('max_history', 0)
+
+            load_params = dict(plan['model_load'])
+
+            # Load vision and draft before the main model so autosplit
+            # accounts for their VRAM usage.
+
+            # Load vision model component (ExLlamaV3 native)
+            vision_model = None
+            if "vision" not in config.model_classes:
+                logger.info("No vision component in model config. Skipping multimodal setup.")
+            elif not plan['load_vision']:
+                logger.info("Vision component detected but disabled by no-vision. Skipping multimodal setup.")
             else:
-                draft_config = Config.from_directory(str(draft_path))
-                draft_model = Model.from_config(draft_config, swa_full=plan['swa_full'])
+                logger.info("Vision component detected in model config. Attempting to load...")
+                try:
+                    vision_model = Model.from_config(config, component="vision")
+                    vision_model.load(**plan['vision_load'])
+                    logger.info("Vision model loaded successfully.")
+                except Exception as e:
+                    logger.warning(f"Vision model loading failed (multimodal disabled): {e}")
 
-        # Recurrent models keep one past state per draft token, so the cache has to
-        # reserve them before it is created.
-        if draft_model is not None:
-            max_history = max(max_history, draft_model.caps.get("default_draft_size", 4))
+            # Build the draft model for speculative decoding. It is only instantiated
+            # here; the caches are created once its draft size is known, and loading
+            # happens below.
+            draft_model = None
+            draft_cache = None
+            draft_spec = plan['draft']
 
-        cache = Cache(model, max_num_tokens=max_tokens, layer_type=layer_type, max_history=max_history, **cache_kwargs)
+            draft_load_params = dict(draft_spec['load'])
 
-        if draft_model is not None:
-            draft_cache = Cache(draft_model, max_num_tokens=max_tokens, layer_type=layer_type, **cache_kwargs)
-            try:
-                draft_model.load(**draft_load_params)
-                logger.info(f"Draft model loaded successfully. Max speculative tokens: {draft_spec['draft_max']}")
-            except Exception as e:
-                logger.warning(f"Draft model loading failed (speculative decoding disabled): {e}")
-                draft_model = None
-                draft_cache = None
+            if draft_spec['mtp'] and "mtp" not in config.model_classes:
+                logger.warning("exl3-mtp is set but this model has no MTP head. Speculative decoding disabled.")
+            elif draft_spec['mtp']:
+                logger.info("Using the MTP head of the main model for speculative decoding.")
+                try:
+                    draft_model = Model.from_config(config, swa_full=plan['swa_full'], component="mtp")
+                except Exception as e:
+                    logger.warning(f"Failed to build the MTP head (speculative decoding disabled): {e}")
+                    draft_model = None
+            elif draft_spec['model_draft']:
+                logger.info(f"Loading draft model for speculative decoding: {draft_spec['model_draft']}")
 
-        # Load main model last
-        model.load(**load_params)
-        tokenizer = Tokenizer.from_config(config)
+                draft_path = Path(draft_spec['model_draft'])
+                if not draft_path.is_dir():
+                    draft_path = Path(f'{shared.args.model_dir}') / Path(draft_spec['model_draft'])
 
-        if plan['load_metrics']:
-            config.stc.metrics.print()
+                if not draft_path.is_dir():
+                    logger.warning(f"Draft model not found at {draft_path}, speculative decoding disabled.")
+                else:
+                    draft_config = Config.from_directory(str(draft_path))
+                    draft_model = Model.from_config(draft_config, swa_full=plan['swa_full'])
 
-        generator_kwargs = dict(plan['generator'])
-        if draft_model is None:
-            generator_kwargs.pop('num_draft_tokens', None)
-            generator_kwargs.pop('dynamic_draft_tokens', None)
-            generator_kwargs.pop('draft_confidence', None)
+            # Recurrent models keep one past state per draft token, so the cache has to
+            # reserve them before it is created.
+            if draft_model is not None:
+                max_history = max(max_history, draft_model.caps.get("default_draft_size", 4))
 
-        generator = Generator(
-            model=model,
-            cache=cache,
-            tokenizer=tokenizer,
-            draft_model=draft_model,
-            draft_cache=draft_cache,
-            **generator_kwargs,
-        )
+            cache = Cache(model, max_num_tokens=max_tokens, layer_type=layer_type, max_history=max_history, **cache_kwargs)
 
-        result = cls()
-        result.model = model
-        result.cache = cache
-        result.tokenizer = tokenizer
-        result.generator = generator
-        result.parallel_generator = ConcurrentGenerator(generator)
-        result.config = config
-        result.max_tokens = max_tokens
-        result.vision_model = vision_model
-        result.draft_model = draft_model
-        result.draft_cache = draft_cache
+            if draft_model is not None:
+                draft_cache = Cache(draft_model, max_num_tokens=max_tokens, layer_type=layer_type, **cache_kwargs)
+                try:
+                    draft_model.load(**draft_load_params)
+                    logger.info(f"Draft model loaded successfully. Max speculative tokens: {draft_spec['draft_max']}")
+                except Exception as e:
+                    logger.warning(f"Draft model loading failed (speculative decoding disabled): {e}")
+                    draft_model = None
+                    draft_cache = None
 
-        return result, result
+            # Load main model last
+            model.load(**load_params)
+            tokenizer = Tokenizer.from_config(config)
+
+            if plan['load_metrics']:
+                config.stc.metrics.print()
+
+            generator_kwargs = dict(plan['generator'])
+            if draft_model is None:
+                generator_kwargs.pop('num_draft_tokens', None)
+                generator_kwargs.pop('dynamic_draft_tokens', None)
+                generator_kwargs.pop('draft_confidence', None)
+
+            generator = Generator(
+                model=model,
+                cache=cache,
+                tokenizer=tokenizer,
+                draft_model=draft_model,
+                draft_cache=draft_cache,
+                **generator_kwargs,
+            )
+
+            result = cls()
+            result.model = model
+            result.cache = cache
+            result.tokenizer = tokenizer
+            result.generator = generator
+            result.parallel_generator = ConcurrentGenerator(generator)
+            result.config = config
+            result.max_tokens = max_tokens
+            result.vision_model = vision_model
+            result.draft_model = draft_model
+            result.draft_cache = draft_cache
+
+            return result, result
+        except Exception:
+            # A failed load (out of memory, most often) leaves weights on the GPU that
+            # nothing else will release, since there is no model object to unload.
+            logger.error("ExLlamaV3 loading failed. Releasing what was already allocated.")
+            for component in (draft_model, vision_model, model):
+                if component is not None:
+                    try:
+                        component.unload()
+                    except Exception as e:
+                        logger.warning(f"Error unloading a partially loaded component: {e}")
+
+            from modules.torch_utils import clear_torch_cache
+            clear_torch_cache()
+            raise
 
     def is_multimodal(self) -> bool:
         """Check if this model supports multimodal input."""
@@ -581,6 +600,12 @@ class Exllamav3Model:
                 self.draft_model.unload()
             except Exception as e:
                 logger.warning(f"Error unloading draft model: {e}")
+
+        if self.vision_model is not None:
+            try:
+                self.vision_model.unload()
+            except Exception as e:
+                logger.warning(f"Error unloading vision model: {e}")
 
         if self.model is not None:
             try:

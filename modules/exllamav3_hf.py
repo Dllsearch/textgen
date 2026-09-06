@@ -32,37 +32,56 @@ class Exllamav3HF(PreTrainedModel, GenerationMixin):
             hf_config.text_config = PretrainedConfig(**hf_config.text_config)
         super().__init__(hf_config)
 
-        plan = build_plan(shared.args, hf=True)
-        logger.info("ExLlamaV3 launch parameters:\n" + format_plan(plan, Path(model_dir).name))
-        for note in plan['notes']:
-            logger.warning(note)
+        self.ex_model = None
 
-        exl3_config = Config.from_directory(model_dir, layer_map=plan['config'].get('layer_map'))
-        apply_config_options(exl3_config, plan)
+        try:
+            plan = build_plan(shared.args, hf=True)
+            logger.info("ExLlamaV3 launch parameters:\n" + format_plan(plan, Path(model_dir).name))
+            for note in plan['notes']:
+                logger.warning(note)
 
-        self.generation_config = GenerationConfig()
-        self.ex_model = Model.from_config(exl3_config, swa_full=plan['swa_full'])
+            exl3_config = Config.from_directory(model_dir, layer_map=plan['config'].get('layer_map'))
+            apply_config_options(exl3_config, plan)
 
-        max_tokens = plan['cache_tokens']
-        layer_type = CacheLayer_fp16 if plan['cache']['layer_type'] == 'fp16' else CacheLayer_quant
-        cache_kwargs = {k: v for k, v in plan['cache'].items() if k not in ('layer_type', 'max_num_tokens')}
+            self.generation_config = GenerationConfig()
+            self.ex_model = Model.from_config(exl3_config, swa_full=plan['swa_full'])
 
-        self.ex_cache = Cache(self.ex_model, max_num_tokens=max_tokens, layer_type=layer_type, **cache_kwargs)
+            max_tokens = plan['cache_tokens']
+            layer_type = CacheLayer_fp16 if plan['cache']['layer_type'] == 'fp16' else CacheLayer_quant
+            cache_kwargs = {k: v for k, v in plan['cache'].items() if k not in ('layer_type', 'max_num_tokens')}
 
-        load_params = dict(plan['model_load'])
-        self.ex_model.load(**load_params)
+            self.ex_cache = Cache(self.ex_model, max_num_tokens=max_tokens, layer_type=layer_type, **cache_kwargs)
 
-        if plan['load_metrics']:
-            exl3_config.stc.metrics.print()
+            load_params = dict(plan['model_load'])
+            self.ex_model.load(**load_params)
 
-        self.past_seq = None
-        self.max_tokens = max_tokens
-        self.layer_type = layer_type
-        self.cache_kwargs = cache_kwargs
+            if plan['load_metrics']:
+                exl3_config.stc.metrics.print()
 
-        if shared.args.cfg_cache:
-            self.ex_cache_negative = Cache(self.ex_model, max_num_tokens=max_tokens, layer_type=layer_type, **cache_kwargs)
-            self.past_seq_negative = None
+            self.past_seq = None
+            self.max_tokens = max_tokens
+            self.layer_type = layer_type
+            self.cache_kwargs = cache_kwargs
+
+            if shared.args.cfg_cache:
+                self.ex_cache_negative = Cache(self.ex_model, max_num_tokens=max_tokens, layer_type=layer_type, **cache_kwargs)
+                self.past_seq_negative = None
+        except Exception:
+            # Out-of-memory partway through a load leaves weights on the GPU with no
+            # model object for Unload to work with, so release them here.
+            logger.error("ExLlamaV3 loading failed. Releasing what was already allocated.")
+            if self.ex_model is not None:
+                try:
+                    self.ex_model.unload()
+                except Exception as e:
+                    logger.warning(f"Error unloading a partially loaded model: {e}")
+
+            self.ex_model = None
+            self.ex_cache = None
+
+            from modules.torch_utils import clear_torch_cache
+            clear_torch_cache()
+            raise
 
     def _validate_model_class(self):
         pass

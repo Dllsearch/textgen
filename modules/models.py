@@ -133,6 +133,15 @@ def TensorRT_LLM_loader(model_name):
 
 def unload_model(keep_model_name=False):
     if shared.model is None:
+        # A load that failed partway (out of memory, for instance) leaves no
+        # shared.model behind but can still hold VRAM in the caching allocator,
+        # so give the user something to press.
+        from modules.torch_utils import clear_torch_cache
+        clear_torch_cache()
+
+        if not keep_model_name:
+            shared.model_name = 'None'
+
         return
 
     model_class_name = shared.model.__class__.__name__

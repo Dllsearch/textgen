@@ -245,7 +245,7 @@ def create_ui():
             )
 
             with gr.Tabs():
-                with gr.Tab("Cache & batching") as shared.gradio['exl3_tab_cache']:
+                with gr.Tab("Cache & batching"):
                     gr.Markdown('The cache is allocated in pages of 256 tokens, so ctx-size is rounded up to the next multiple of 256.')
                     with gr.Row():
                         with gr.Column():
@@ -258,7 +258,7 @@ def create_ui():
                             shared.gradio['exl3_recurrent_cache'] = gr.Number(label="recurrent-cache", step=1, value=shared.args.exl3_recurrent_cache, info='Recurrent state cache in system RAM, in GB. Default: 4. Only used by models with recurrent or sliding-window layers; ignored by everything else.')
                             shared.gradio['exl3_swa_full'] = gr.Checkbox(label="swa-full", value=shared.args.exl3_swa_full, info='Give sliding-window attention layers a full cache instead of the default recurrent mode with snapshots. Uses more VRAM, but rewinds are cheaper.')
 
-                with gr.Tab("Memory & devices") as shared.gradio['exl3_tab_memory']:
+                with gr.Tab("Memory & devices"):
                     gr.Markdown('How the loader spreads weights over your GPUs. With gpu-split empty, ExLlamaV3 autosplits across all visible devices.')
                     with gr.Row():
                         with gr.Column():
@@ -267,7 +267,7 @@ def create_ui():
                         with gr.Column():
                             shared.gradio['exl3_autosplit_batch_size'] = gr.Number(label="autosplit-batch-size", precision=0, step=1, value=shared.args.exl3_autosplit_batch_size, info='Batch size the autosplit reserves VRAM for. Default: 1. Raise it if you serve several requests at once and hit out-of-memory during generation rather than during loading.')
 
-                with gr.Tab("MoE CPU offload") as shared.gradio['exl3_tab_moe']:
+                with gr.Tab("MoE CPU offload"):
                     gr.Markdown(
                         "Experimental. Runs part of a MoE model's routed experts on the CPU, with those weights in system RAM. "
                         "Requires layer-split mode (turn enable_tp off) and mul1-codebook experts; ineligible layers stay on the GPU."
@@ -281,7 +281,7 @@ def create_ui():
                             shared.gradio['exl3_moe_cpu_threads'] = gr.Number(label="moe-cpu-threads", precision=0, step=1, value=shared.args.exl3_moe_cpu_threads, info='Worker threads for the offloaded experts. 0 = auto (half your cores).')
                             shared.gradio['exl3_ngram_ram'] = gr.Checkbox(label="ngram-ram", value=shared.args.exl3_ngram_ram, info='For PLE models such as Qwen3.8-Flash-Next: hold the n-gram embedding table in RAM (tens of GB) instead of reading rows from disk on every forward pass.')
 
-                with gr.Tab("Tensor parallelism") as shared.gradio['exl3_tab_tp']:
+                with gr.Tab("Tensor parallelism"):
                     gr.Markdown('Applies only when **enable_tp** is checked in Main options. The backend (native/nccl) is set there too.')
                     with gr.Row():
                         with gr.Column():
@@ -290,8 +290,9 @@ def create_ui():
                         with gr.Column():
                             shared.gradio['exl3_moe_tensor_split'] = gr.Checkbox(label="moe-tensor-split", value=shared.args.exl3_moe_tensor_split, info='Split MoE layers tensor-wise instead of distributing whole experts across GPUs. Worth trying when expert parallelism leaves the cards unevenly loaded.')
 
-                with gr.Tab("Drafting") as shared.gradio['exl3_tab_draft']:
+                with gr.Tab("Drafting"):
                     gr.Markdown('Speculative decoding for the ExLlamav3 loader. The draft model itself and draft-max are set in **Main options -> Speculative decoding**.')
+                    shared.gradio['exl3_hf_note_draft'] = gr.Markdown('*ExLlamav3_HF runs through the Transformers generation loop and has no ExLlamaV3 generator, so none of these apply. Switch the loader to ExLlamav3 to use them.*')
                     with gr.Row():
                         with gr.Column():
                             shared.gradio['exl3_mtp'] = gr.Checkbox(label="mtp", value=shared.args.exl3_mtp, info="Draft with the model's own MTP head, if it has one (Qwen3.5, GLM5-Next, DeepSeek-V4...). No second model to load. Takes precedence over model-draft.")
@@ -301,8 +302,9 @@ def create_ui():
                             shared.gradio['exl3_dynamic_draft'] = gr.Checkbox(label="dynamic-draft", value=shared.args.exl3_dynamic_draft, info='Shorten the draft when the model keeps rejecting it, up to draft-max. Usually a free win when the acceptance rate varies.')
                             shared.gradio['exl3_draft_confidence'] = gr.Number(label="draft-confidence", step=0.05, value=shared.args.exl3_draft_confidence, info='Confidence below which dynamic-draft stops drafting. Default: 0.4. Lower drafts more aggressively.')
 
-                with gr.Tab("Components") as shared.gradio['exl3_tab_components']:
+                with gr.Tab("Components"):
                     gr.Markdown('Multimodal models load a separate vision component next to the text model. ExLlamaV3 implements text, vision and MTP components; there is no audio component.')
+                    shared.gradio['exl3_hf_note_components'] = gr.Markdown('*ExLlamav3_HF loads the text component only. Switch the loader to ExLlamav3 for vision.*')
                     with gr.Row():
                         with gr.Column():
                             shared.gradio['exl3_no_vision'] = gr.Checkbox(label="no-vision", value=shared.args.exl3_no_vision, info='Skip the vision component entirely and free its VRAM. The model still works for text; image attachments stop working.')
@@ -310,7 +312,7 @@ def create_ui():
                         with gr.Column():
                             shared.gradio['exl3_vision_device'] = gr.Textbox(label="vision-device", value=shared.args.exl3_vision_device, info='Pin the vision component to one GPU. Example: cuda:1, or just 1. Empty = same split as the text model.')
 
-                with gr.Tab("Advanced") as shared.gradio['exl3_tab_advanced']:
+                with gr.Tab("Advanced"):
                     gr.Markdown('Rarely needed. Leave empty unless you are debugging a load or building a frankenmerge.')
                     with gr.Row():
                         with gr.Column():
@@ -321,7 +323,7 @@ def create_ui():
                             shared.gradio['exl3_load_verbose'] = gr.Checkbox(label="load-verbose", value=shared.args.exl3_load_verbose, info='Print each module as it loads. Useful when a load fails partway through.')
                             shared.gradio['exl3_load_metrics'] = gr.Checkbox(label="load-metrics", value=shared.args.exl3_load_metrics, info='Print loader metrics (read sizes, timings) once loading finishes.')
 
-                with gr.Tab("Launch preview") as shared.gradio['exl3_preview']:
+                with gr.Tab("Launch preview"):
                     gr.Markdown('The calls that Load will make, rebuilt as you edit the options above. Warnings about ignored or adjusted values appear at the bottom.')
                     shared.gradio['exl3_preview_code'] = gr.Code(value=get_initial_exl3_preview, language='python', interactive=False, lines=14, show_label=False)
 
