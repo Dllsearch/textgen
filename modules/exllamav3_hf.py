@@ -15,6 +15,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from exllamav3 import Cache, Config, Model
 from exllamav3.cache import CacheLayer_fp16, CacheLayer_quant
 from modules import shared
+from modules.exllamav3_params import apply_config_options, build_plan, format_plan
 from modules.logging_colors import logger
 
 try:
@@ -31,58 +32,29 @@ class Exllamav3HF(PreTrainedModel, GenerationMixin):
             hf_config.text_config = PretrainedConfig(**hf_config.text_config)
         super().__init__(hf_config)
 
-        exl3_config = Config.from_directory(model_dir)
+        plan = build_plan(shared.args, hf=True)
+        logger.info("ExLlamaV3 launch parameters:\n" + format_plan(plan, Path(model_dir).name))
+        for note in plan['notes']:
+            logger.warning(note)
+
+        exl3_config = Config.from_directory(model_dir, layer_map=plan['config'].get('layer_map'))
+        apply_config_options(exl3_config, plan)
 
         self.generation_config = GenerationConfig()
-        self.ex_model = Model.from_config(exl3_config)
+        self.ex_model = Model.from_config(exl3_config, swa_full=plan['swa_full'])
 
-        # Calculate the closest multiple of 256 at or above the chosen value
-        max_tokens = shared.args.ctx_size
-        if max_tokens % 256 != 0:
-            adjusted_tokens = ((max_tokens // 256) + 1) * 256
-            logger.warning(f"max_num_tokens must be a multiple of 256. Adjusting from {max_tokens} to {adjusted_tokens}")
-            max_tokens = adjusted_tokens
-
-        # Parse cache type
-        cache_type = shared.args.cache_type.lower()
-        cache_kwargs = {}
-        if cache_type == 'fp16':
-            layer_type = CacheLayer_fp16
-        elif cache_type.startswith('q'):
-            layer_type = CacheLayer_quant
-            if '_' in cache_type:
-                # Different bits for k and v (e.g., q4_q8)
-                k_part, v_part = cache_type.split('_')
-                k_bits = int(k_part[1:])
-                v_bits = int(v_part[1:])
-            else:
-                # Same bits for k and v (e.g., q4)
-                k_bits = v_bits = int(cache_type[1:])
-
-            # Validate bit ranges
-            if not (2 <= k_bits <= 8 and 2 <= v_bits <= 8):
-                logger.warning(f"Invalid quantization bits: k_bits={k_bits}, v_bits={v_bits}. Must be between 2 and 8. Falling back to fp16.")
-                layer_type = CacheLayer_fp16
-            else:
-                cache_kwargs = {'k_bits': k_bits, 'v_bits': v_bits}
-        else:
-            logger.warning(f"Unrecognized cache type: {cache_type}. Falling back to fp16.")
-            layer_type = CacheLayer_fp16
+        max_tokens = plan['cache_tokens']
+        layer_type = CacheLayer_fp16 if plan['cache']['layer_type'] == 'fp16' else CacheLayer_quant
+        cache_kwargs = {k: v for k, v in plan['cache'].items() if k not in ('layer_type', 'max_num_tokens')}
 
         self.ex_cache = Cache(self.ex_model, max_num_tokens=max_tokens, layer_type=layer_type, **cache_kwargs)
 
-        # Create load parameters dictionary
-        load_params = {'progressbar': True}
-        if shared.args.gpu_split:
-            split = [float(alloc) for alloc in shared.args.gpu_split.split(",")]
-            load_params['use_per_device'] = split
-
-        # Tensor-parallelism
-        if shared.args.enable_tp:
-            load_params['tensor_p'] = True
-            load_params['tp_backend'] = shared.args.tp_backend
-
+        load_params = dict(plan['model_load'])
         self.ex_model.load(**load_params)
+
+        if plan['load_metrics']:
+            exl3_config.stc.metrics.print()
+
         self.past_seq = None
         self.max_tokens = max_tokens
         self.layer_type = layer_type

@@ -1,6 +1,8 @@
 @echo off
 setlocal enabledelayedexpansion
 
+set NO_PROXY=127.0.0.1,localhost
+
 @rem environment isolation
 set PYTHONNOUSERSITE=1
 set PYTHONPATH=

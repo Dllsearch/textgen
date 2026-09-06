@@ -27,6 +27,7 @@ from modules.image_utils import (
     convert_image_attachments_to_pil,
     convert_openai_messages_to_images
 )
+from modules.exllamav3_params import apply_config_options, build_plan, format_plan
 from modules.logging_colors import logger
 from modules.text_generation import get_max_prompt_length
 
@@ -134,97 +135,101 @@ class Exllamav3Model:
         )
         global_allocator.next_token_index = FIRST_MM_EMBEDDING_INDEX
 
-        config = Config.from_directory(str(path_to_model))
-        model = Model.from_config(config)
+        plan = build_plan(shared.args)
+        logger.info("ExLlamaV3 launch parameters:\n" + format_plan(plan, path_to_model.name))
+        for note in plan['notes']:
+            logger.warning(note)
 
-        # Adjust to the closest multiple of 256 at or above the chosen value
-        max_tokens = shared.args.ctx_size
-        if max_tokens % 256 != 0:
-            adjusted_tokens = ((max_tokens // 256) + 1) * 256
-            logger.warning(f"max_num_tokens must be a multiple of 256. Adjusting from {max_tokens} to {adjusted_tokens}")
-            max_tokens = adjusted_tokens
+        config = Config.from_directory(str(path_to_model), layer_map=plan['config'].get('layer_map'))
+        apply_config_options(config, plan)
 
-        cache_type = shared.args.cache_type.lower()
-        cache_kwargs = {}
-        if cache_type == 'fp16':
-            layer_type = CacheLayer_fp16
-        elif cache_type.startswith('q'):
-            layer_type = CacheLayer_quant
-            if '_' in cache_type:
-                # Different bits for k and v (e.g., q4_q8)
-                k_part, v_part = cache_type.split('_')
-                k_bits = int(k_part[1:])
-                v_bits = int(v_part[1:])
-            else:
-                # Same bits for k and v (e.g., q4)
-                k_bits = v_bits = int(cache_type[1:])
+        model = Model.from_config(config, swa_full=plan['swa_full'])
 
-            # Validate bit ranges
-            if not (2 <= k_bits <= 8 and 2 <= v_bits <= 8):
-                logger.warning(f"Invalid quantization bits: k_bits={k_bits}, v_bits={v_bits}. Must be between 2 and 8. Falling back to fp16.")
-                layer_type = CacheLayer_fp16
-            else:
-                cache_kwargs = {'k_bits': k_bits, 'v_bits': v_bits}
-        else:
-            logger.warning(f"Unrecognized cache type: {cache_type}. Falling back to fp16.")
-            layer_type = CacheLayer_fp16
+        max_tokens = plan['cache_tokens']
+        layer_type = CacheLayer_fp16 if plan['cache']['layer_type'] == 'fp16' else CacheLayer_quant
+        cache_kwargs = {k: v for k, v in plan['cache'].items() if k not in ('layer_type', 'max_num_tokens', 'max_history')}
+        max_history = plan['cache'].get('max_history', 0)
 
-        cache = Cache(model, max_num_tokens=max_tokens, layer_type=layer_type, **cache_kwargs)
-
-        load_params = {'progressbar': True}
-        split = None
-        if shared.args.gpu_split:
-            split = [float(alloc) for alloc in shared.args.gpu_split.split(",")]
-            load_params['use_per_device'] = split
-
-        # Tensor-parallelism
-        if shared.args.enable_tp:
-            load_params['tensor_p'] = True
-            load_params['tp_backend'] = shared.args.tp_backend
+        load_params = dict(plan['model_load'])
 
         # Load vision and draft before the main model so autosplit
         # accounts for their VRAM usage.
 
         # Load vision model component (ExLlamaV3 native)
         vision_model = None
-        if "vision_config" in config.config_dict:
+        if "vision" not in config.model_classes:
+            logger.info("No vision component in model config. Skipping multimodal setup.")
+        elif not plan['load_vision']:
+            logger.info("Vision component detected but disabled by no-vision. Skipping multimodal setup.")
+        else:
             logger.info("Vision component detected in model config. Attempting to load...")
             try:
                 vision_model = Model.from_config(config, component="vision")
-                vision_model.load(progressbar=True)
+                vision_model.load(**plan['vision_load'])
                 logger.info("Vision model loaded successfully.")
             except Exception as e:
                 logger.warning(f"Vision model loading failed (multimodal disabled): {e}")
-        else:
-            logger.info("No vision component in model config. Skipping multimodal setup.")
 
-        # Initialize draft model for speculative decoding
+        # Build the draft model for speculative decoding. It is only instantiated
+        # here; the caches are created once its draft size is known, and loading
+        # happens below.
         draft_model = None
         draft_cache = None
-        if shared.args.model_draft and shared.args.model_draft.lower() not in ["", "none"]:
-            logger.info(f"Loading draft model for speculative decoding: {shared.args.model_draft}")
+        draft_spec = plan['draft']
 
-            draft_path = Path(shared.args.model_draft)
+        draft_load_params = dict(draft_spec['load'])
+
+        if draft_spec['mtp'] and "mtp" not in config.model_classes:
+            logger.warning("exl3-mtp is set but this model has no MTP head. Speculative decoding disabled.")
+        elif draft_spec['mtp']:
+            logger.info("Using the MTP head of the main model for speculative decoding.")
+            try:
+                draft_model = Model.from_config(config, swa_full=plan['swa_full'], component="mtp")
+            except Exception as e:
+                logger.warning(f"Failed to build the MTP head (speculative decoding disabled): {e}")
+                draft_model = None
+        elif draft_spec['model_draft']:
+            logger.info(f"Loading draft model for speculative decoding: {draft_spec['model_draft']}")
+
+            draft_path = Path(draft_spec['model_draft'])
             if not draft_path.is_dir():
-                draft_path = Path(f'{shared.args.model_dir}') / Path(shared.args.model_draft)
+                draft_path = Path(f'{shared.args.model_dir}') / Path(draft_spec['model_draft'])
 
             if not draft_path.is_dir():
                 logger.warning(f"Draft model not found at {draft_path}, speculative decoding disabled.")
             else:
                 draft_config = Config.from_directory(str(draft_path))
-                draft_model = Model.from_config(draft_config)
-                draft_cache = Cache(draft_model, max_num_tokens=max_tokens, layer_type=layer_type, **cache_kwargs)
+                draft_model = Model.from_config(draft_config, swa_full=plan['swa_full'])
 
-                draft_load_params = {'progressbar': True}
-                if split:
-                    draft_load_params['use_per_device'] = split
+        # Recurrent models keep one past state per draft token, so the cache has to
+        # reserve them before it is created.
+        if draft_model is not None:
+            max_history = max(max_history, draft_model.caps.get("default_draft_size", 4))
 
+        cache = Cache(model, max_num_tokens=max_tokens, layer_type=layer_type, max_history=max_history, **cache_kwargs)
+
+        if draft_model is not None:
+            draft_cache = Cache(draft_model, max_num_tokens=max_tokens, layer_type=layer_type, **cache_kwargs)
+            try:
                 draft_model.load(**draft_load_params)
-                logger.info(f"Draft model loaded successfully. Max speculative tokens: {shared.args.draft_max}")
+                logger.info(f"Draft model loaded successfully. Max speculative tokens: {draft_spec['draft_max']}")
+            except Exception as e:
+                logger.warning(f"Draft model loading failed (speculative decoding disabled): {e}")
+                draft_model = None
+                draft_cache = None
 
         # Load main model last
         model.load(**load_params)
         tokenizer = Tokenizer.from_config(config)
+
+        if plan['load_metrics']:
+            config.stc.metrics.print()
+
+        generator_kwargs = dict(plan['generator'])
+        if draft_model is None:
+            generator_kwargs.pop('num_draft_tokens', None)
+            generator_kwargs.pop('dynamic_draft_tokens', None)
+            generator_kwargs.pop('draft_confidence', None)
 
         generator = Generator(
             model=model,
@@ -232,7 +237,7 @@ class Exllamav3Model:
             tokenizer=tokenizer,
             draft_model=draft_model,
             draft_cache=draft_cache,
-            num_draft_tokens=shared.args.draft_max if draft_model is not None else 0,
+            **generator_kwargs,
         )
 
         result = cls()
@@ -394,6 +399,17 @@ class Exllamav3Model:
             max_new_tokens = state['truncation_length'] - self._last_prompt_token_count
         else:
             max_new_tokens = state['max_new_tokens']
+
+        # The generator reserves max_new_tokens + 1 tokens per job, so a prompt plus
+        # max_new_tokens that exactly fills the context needs one page more than the
+        # cache holds. Clamp both to the actual cache size to avoid that off-by-one.
+        cache_tokens = getattr(self, 'max_tokens', None) or state['truncation_length']
+        if self._last_prompt_token_count + max_new_tokens + 1 > cache_tokens:
+            if self._last_prompt_token_count + 2 > cache_tokens:
+                input_ids = input_ids[:, -(cache_tokens - 2):]
+                self._last_prompt_token_count = input_ids.shape[-1]
+
+            max_new_tokens = max(1, cache_tokens - self._last_prompt_token_count - 1)
 
         eos_ids = [eid for eid in self.config.eos_token_id_list if eid is not None]
 

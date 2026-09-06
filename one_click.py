@@ -167,6 +167,11 @@ def get_current_commit():
     return result.stdout.decode('utf-8').strip()
 
 
+def git_remote_configured():
+    result = run_cmd("git remote", capture_output=True, environment=True)
+    return bool(result.stdout.decode('utf-8').strip())
+
+
 def get_extensions_names():
     return [foldername for foldername in os.listdir('extensions') if os.path.isfile(os.path.join('extensions', foldername, 'requirements.txt'))]
 
@@ -389,13 +394,17 @@ def update_requirements(initial_installation=False, pull=True):
 
         # Update to the latest release tag, but only if HEAD is an ancestor of it.
         # This keeps users on untagged commits ahead of the last tag in place until the next release.
-        run_cmd("git fetch --tags", assert_success=True, environment=True)
-        latest_tag = run_cmd('git tag -l "v*" --sort=-v:refname', capture_output=True, environment=True).stdout.decode().strip().split('\n', 1)[0]
-        if latest_tag and run_cmd(f"git merge-base --is-ancestor HEAD {latest_tag}", capture_output=True, environment=True).returncode == 0:
-            print_big_message(f'Updating to release tag {latest_tag}.')
-            run_cmd(f"git merge --autostash --ff-only {latest_tag}", assert_success=True, environment=True)
+        if git_remote_configured():
+            run_cmd("git fetch --tags", assert_success=True, environment=True)
+            latest_tag = run_cmd('git tag -l "v*" --sort=-v:refname', capture_output=True, environment=True).stdout.decode().strip().split('\n', 1)[0]
+            if latest_tag and run_cmd(f"git merge-base --is-ancestor HEAD {latest_tag}", capture_output=True, environment=True).returncode == 0:
+                print_big_message(f'Updating to release tag {latest_tag}.')
+                run_cmd(f"git merge --autostash --ff-only {latest_tag}", assert_success=True, environment=True)
+            else:
+                print_big_message(f'HEAD is ahead of the latest release tag ({latest_tag}). Skipping git update.')
         else:
-            print_big_message(f'HEAD is ahead of the latest release tag ({latest_tag}). Skipping git update.')
+            print_big_message('No git remote is configured, so this installation is detached from upstream. Skipping the git update.')
+
         current_commit = get_current_commit()
 
         # Check hashes after pulling

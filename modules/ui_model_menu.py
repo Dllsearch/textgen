@@ -26,6 +26,74 @@ NGRAM_SIZE_TYPES = ('ngram-mod', 'ngram-simple', 'ngram-map-k', 'ngram-map-k4v')
 NGRAM_MAP_TYPES = ('ngram-simple', 'ngram-map-k', 'ngram-map-k4v')
 SPEC_TYPE_OUTPUTS = ('spec_ngram_size_n', 'spec_ngram_size_m', 'spec_ngram_min_hits', 'draft_model_header', 'model_draft', 'model_draft_refresh', 'gpu_layers_draft', 'device_draft')
 
+EXL3_PREVIEW_INPUTS = (
+    'loader',
+    'model_menu',
+    'ctx_size',
+    'cache_type',
+    'gpu_split',
+    'enable_tp',
+    'tp_backend',
+    'model_draft',
+    'draft_max',
+    'exl3_max_chunk_size',
+    'exl3_max_batch_size',
+    'exl3_autosplit_batch_size',
+    'exl3_cpu_cache',
+    'exl3_recurrent_cache',
+    'exl3_swa_full',
+    'exl3_no_defrag',
+    'exl3_moe_cpu_layers',
+    'exl3_moe_cpu_split',
+    'exl3_moe_cpu_threads',
+    'exl3_ngram_ram',
+    'exl3_tp_parallelism',
+    'exl3_moe_tensor_split',
+    'exl3_mtp',
+    'exl3_ngram_match_min',
+    'exl3_dynamic_draft',
+    'exl3_draft_confidence',
+    'exl3_layer_map',
+    'exl3_override',
+    'exl3_load_verbose',
+    'exl3_load_metrics',
+    'exl3_reserve_per_device',
+    'exl3_no_vision',
+    'exl3_vision_device',
+)
+
+
+def get_exl3_components(model_name):
+    from modules.exllamav3_params import detect_components
+
+    if not model_name or model_name == 'None':
+        return None
+
+    return detect_components(Path(shared.args.model_dir) / model_name)
+
+
+def get_initial_exl3_preview():
+    from modules.exllamav3_params import build_plan, format_plan
+
+    loader = shared.args.loader or ''
+    if loader not in ('ExLlamav3', 'ExLlamav3_HF'):
+        return 'Select the ExLlamav3 or ExLlamav3_HF loader to see the launch parameters.'
+
+    plan = build_plan(shared.args, hf=(loader == 'ExLlamav3_HF'))
+    return format_plan(plan, shared.model_name, get_exl3_components(shared.model_name))
+
+
+def update_exl3_preview(*args):
+    from modules.exllamav3_params import build_plan, format_plan
+
+    state = dict(zip(EXL3_PREVIEW_INPUTS, args))
+    loader = state.get('loader')
+    if loader not in ('ExLlamav3', 'ExLlamav3_HF'):
+        return 'Select the ExLlamav3 or ExLlamav3_HF loader to see the launch parameters.'
+
+    plan = build_plan(state, hf=(loader == 'ExLlamav3_HF'))
+    return format_plan(plan, state.get('model_menu'), get_exl3_components(state.get('model_menu')))
+
 
 def spec_type_visibility_updates(spec_type):
     is_ngram_size = spec_type in NGRAM_SIZE_TYPES
@@ -167,6 +235,96 @@ def create_ui():
                 with gr.Row():
                     shared.gradio['model_status'] = gr.Markdown('No model is loaded' if shared.model_name == 'None' else 'Ready')
 
+        # ExLlamaV3 options, full width below the two columns
+        with gr.Accordion("ExLlamaV3 options", open=False, elem_id="exl3-options") as shared.gradio['exl3_options_accordion']:
+            gr.Markdown(
+                'Extra ExLlamaV3 flags that have no equivalent above. Context length, cache type, gpu-split, '
+                'enable_tp and the draft model live in **Main options**; everything here refines how they are applied. '
+                'Empty fields and zeros mean "use the ExLlamaV3 default", and the **Launch preview** tab shows the '
+                'resulting calls before you press Load.'
+            )
+
+            with gr.Tabs():
+                with gr.Tab("Cache & batching") as shared.gradio['exl3_tab_cache']:
+                    gr.Markdown('The cache is allocated in pages of 256 tokens, so ctx-size is rounded up to the next multiple of 256.')
+                    with gr.Row():
+                        with gr.Column():
+                            shared.gradio['exl3_max_chunk_size'] = gr.Number(label="max-chunk-size", precision=0, step=256, value=shared.args.exl3_max_chunk_size, info='Tokens processed per forward pass while ingesting a prompt. Default: 2048. Lower values make a new request interrupt ongoing generation for less time, at the cost of prompt speed.')
+                            shared.gradio['exl3_max_batch_size'] = gr.Number(label="max-batch-size", precision=0, step=1, value=shared.args.exl3_max_batch_size, info='Upper bound on sequences generated in parallel. Default: 256. The generator lowers it on its own based on free cache space, so this is a ceiling, not a reservation.')
+                            shared.gradio['exl3_no_defrag'] = gr.Checkbox(label="no-defrag", value=shared.args.exl3_no_defrag, info='Stop the generator from periodically defragmenting the cache. Only useful for debugging.')
+
+                        with gr.Column():
+                            shared.gradio['exl3_cpu_cache'] = gr.Number(label="cpu-cache", step=1, value=shared.args.exl3_cpu_cache, info='Second-tier page cache in system RAM, in GB. 0 = disabled. Pages evicted from VRAM are kept here, so returning to an older chat reuses them instead of reprocessing the prompt. Not supported with enable_tp.')
+                            shared.gradio['exl3_recurrent_cache'] = gr.Number(label="recurrent-cache", step=1, value=shared.args.exl3_recurrent_cache, info='Recurrent state cache in system RAM, in GB. Default: 4. Only used by models with recurrent or sliding-window layers; ignored by everything else.')
+                            shared.gradio['exl3_swa_full'] = gr.Checkbox(label="swa-full", value=shared.args.exl3_swa_full, info='Give sliding-window attention layers a full cache instead of the default recurrent mode with snapshots. Uses more VRAM, but rewinds are cheaper.')
+
+                with gr.Tab("Memory & devices") as shared.gradio['exl3_tab_memory']:
+                    gr.Markdown('How the loader spreads weights over your GPUs. With gpu-split empty, ExLlamaV3 autosplits across all visible devices.')
+                    with gr.Row():
+                        with gr.Column():
+                            shared.gradio['exl3_reserve_per_device'] = gr.Textbox(label="reserve-per-device", value=shared.args.exl3_reserve_per_device, info='VRAM to keep free on each GPU, in GB, comma-separated. Default: 0.5 per device. A negative value excludes that GPU entirely. Example: 1,0.5 keeps 1 GB free on the first card and 0.5 GB on the second.')
+
+                        with gr.Column():
+                            shared.gradio['exl3_autosplit_batch_size'] = gr.Number(label="autosplit-batch-size", precision=0, step=1, value=shared.args.exl3_autosplit_batch_size, info='Batch size the autosplit reserves VRAM for. Default: 1. Raise it if you serve several requests at once and hit out-of-memory during generation rather than during loading.')
+
+                with gr.Tab("MoE CPU offload") as shared.gradio['exl3_tab_moe']:
+                    gr.Markdown(
+                        "Experimental. Runs part of a MoE model's routed experts on the CPU, with those weights in system RAM. "
+                        "Requires layer-split mode (turn enable_tp off) and mul1-codebook experts; ineligible layers stay on the GPU."
+                    )
+                    with gr.Row():
+                        with gr.Column():
+                            shared.gradio['exl3_moe_cpu_layers'] = gr.Number(label="moe-cpu-layers", precision=0, step=1, value=shared.args.exl3_moe_cpu_layers, info='Move the routed experts of the first N MoE layers to the CPU. 0 = disabled. Frees the most VRAM per layer, but those layers get no GPU/CPU overlap.')
+                            shared.gradio['exl3_moe_cpu_split'] = gr.Number(label="moe-cpu-split", precision=0, step=1, value=shared.args.exl3_moe_cpu_split, info='Move the last N experts of every MoE layer to the CPU. 0 = disabled. Slower per expert but overlaps with the GPU experts of the same layer. Mutually exclusive with moe-cpu-layers.')
+
+                        with gr.Column():
+                            shared.gradio['exl3_moe_cpu_threads'] = gr.Number(label="moe-cpu-threads", precision=0, step=1, value=shared.args.exl3_moe_cpu_threads, info='Worker threads for the offloaded experts. 0 = auto (half your cores).')
+                            shared.gradio['exl3_ngram_ram'] = gr.Checkbox(label="ngram-ram", value=shared.args.exl3_ngram_ram, info='For PLE models such as Qwen3.8-Flash-Next: hold the n-gram embedding table in RAM (tens of GB) instead of reading rows from disk on every forward pass.')
+
+                with gr.Tab("Tensor parallelism") as shared.gradio['exl3_tab_tp']:
+                    gr.Markdown('Applies only when **enable_tp** is checked in Main options. The backend (native/nccl) is set there too.')
+                    with gr.Row():
+                        with gr.Column():
+                            shared.gradio['exl3_tp_parallelism'] = gr.Textbox(label="tp-parallelism", value=shared.args.exl3_tp_parallelism, info='Cap how many GPUs each kind of layer is split across. Keys: attn, mlp, moe, linear, linear_attn. Example: attn=2, moe=4. Useful when splitting a layer over every card costs more in communication than it saves.')
+
+                        with gr.Column():
+                            shared.gradio['exl3_moe_tensor_split'] = gr.Checkbox(label="moe-tensor-split", value=shared.args.exl3_moe_tensor_split, info='Split MoE layers tensor-wise instead of distributing whole experts across GPUs. Worth trying when expert parallelism leaves the cards unevenly loaded.')
+
+                with gr.Tab("Drafting") as shared.gradio['exl3_tab_draft']:
+                    gr.Markdown('Speculative decoding for the ExLlamav3 loader. The draft model itself and draft-max are set in **Main options -> Speculative decoding**.')
+                    with gr.Row():
+                        with gr.Column():
+                            shared.gradio['exl3_mtp'] = gr.Checkbox(label="mtp", value=shared.args.exl3_mtp, info="Draft with the model's own MTP head, if it has one (Qwen3.5, GLM5-Next, DeepSeek-V4...). No second model to load. Takes precedence over model-draft.")
+                            shared.gradio['exl3_ngram_match_min'] = gr.Number(label="ngram-match-min", precision=0, step=1, value=shared.args.exl3_ngram_match_min, info='Draft by matching n-grams against the context instead of using a model. 0 = disabled. Helps on repetitive output such as code edits. Ignored when a draft model or MTP head is in use.')
+
+                        with gr.Column():
+                            shared.gradio['exl3_dynamic_draft'] = gr.Checkbox(label="dynamic-draft", value=shared.args.exl3_dynamic_draft, info='Shorten the draft when the model keeps rejecting it, up to draft-max. Usually a free win when the acceptance rate varies.')
+                            shared.gradio['exl3_draft_confidence'] = gr.Number(label="draft-confidence", step=0.05, value=shared.args.exl3_draft_confidence, info='Confidence below which dynamic-draft stops drafting. Default: 0.4. Lower drafts more aggressively.')
+
+                with gr.Tab("Components") as shared.gradio['exl3_tab_components']:
+                    gr.Markdown('Multimodal models load a separate vision component next to the text model. ExLlamaV3 implements text, vision and MTP components; there is no audio component.')
+                    with gr.Row():
+                        with gr.Column():
+                            shared.gradio['exl3_no_vision'] = gr.Checkbox(label="no-vision", value=shared.args.exl3_no_vision, info='Skip the vision component entirely and free its VRAM. The model still works for text; image attachments stop working.')
+
+                        with gr.Column():
+                            shared.gradio['exl3_vision_device'] = gr.Textbox(label="vision-device", value=shared.args.exl3_vision_device, info='Pin the vision component to one GPU. Example: cuda:1, or just 1. Empty = same split as the text model.')
+
+                with gr.Tab("Advanced") as shared.gradio['exl3_tab_advanced']:
+                    gr.Markdown('Rarely needed. Leave empty unless you are debugging a load or building a frankenmerge.')
+                    with gr.Row():
+                        with gr.Column():
+                            shared.gradio['exl3_layer_map'] = gr.Textbox(label="layer-map", value=shared.args.exl3_layer_map, info='RYS layer map: rebuild the model from a list of layer indices or inclusive ranges. Example: 0..15,11..31 repeats layers 11-15 once.')
+                            shared.gradio['exl3_override'] = gr.Textbox(label="override", value=shared.args.exl3_override, info='Path to a YAML spec that swaps individual tensors in from another model directory. Not supported together with a separate draft model.')
+
+                        with gr.Column():
+                            shared.gradio['exl3_load_verbose'] = gr.Checkbox(label="load-verbose", value=shared.args.exl3_load_verbose, info='Print each module as it loads. Useful when a load fails partway through.')
+                            shared.gradio['exl3_load_metrics'] = gr.Checkbox(label="load-metrics", value=shared.args.exl3_load_metrics, info='Print loader metrics (read sizes, timings) once loading finishes.')
+
+                with gr.Tab("Launch preview") as shared.gradio['exl3_preview']:
+                    gr.Markdown('The calls that Load will make, rebuilt as you edit the options above. Warnings about ignored or adjusted values appear at the bottom.')
+                    shared.gradio['exl3_preview_code'] = gr.Code(value=get_initial_exl3_preview, language='python', interactive=False, lines=14, show_label=False)
+
 
 def create_event_handlers():
     mu = shared.args.multi_user
@@ -225,6 +383,14 @@ def create_event_handlers():
         gradio(*SPEC_TYPE_OUTPUTS),
         show_progress=False
     )
+
+    # Keep the ExLlamaV3 launch preview in sync
+    for param in EXL3_PREVIEW_INPUTS:
+        shared.gradio[param].change(
+            update_exl3_preview,
+            gradio(*EXL3_PREVIEW_INPUTS),
+            gradio('exl3_preview_code'),
+            show_progress=False)
 
     shared.gradio['download_model_button'].click(download_model_wrapper, gradio('custom_model_menu', 'download_specific_file'), gradio('model_status'), show_progress=True)
     shared.gradio['get_file_list'].click(partial(download_model_wrapper, return_links=True), gradio('custom_model_menu', 'download_specific_file'), gradio('model_status'), show_progress=True)
