@@ -262,6 +262,10 @@ def build_plan(source, hf=False):
     cache = {'max_num_tokens': cache_tokens, 'layer_type': layer_type}
     cache.update(cache_kwargs)
 
+    # Recurrent models allocate one set of states per slot, so this is a real
+    # VRAM knob on those and a no-op on everything else.
+    cache['max_batch_size'] = max(1, int(_get(source, 'exl3_cache_slots', 16) or 16))
+
     # Component sub-models (vision, MTP). ExLlamaV3 has no audio component.
     load_vision = not bool(_get(source, 'exl3_no_vision', False))
     vision_load = {'progressbar': True}

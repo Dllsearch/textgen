@@ -38,6 +38,7 @@ EXL3_PREVIEW_INPUTS = (
     'draft_max',
     'exl3_max_chunk_size',
     'exl3_max_batch_size',
+    'exl3_cache_slots',
     'exl3_autosplit_batch_size',
     'exl3_cpu_cache',
     'exl3_recurrent_cache',
@@ -72,27 +73,63 @@ def get_exl3_components(model_name):
     return detect_components(Path(shared.args.model_dir) / model_name)
 
 
+NO_EXL3_LOADER = 'Select the ExLlamav3 or ExLlamav3_HF loader to see the launch parameters.'
+
+
+def _exl3_vram_html(state, plan):
+    """
+    VRAM estimate for the model currently selected in the menu.
+    """
+    from modules.exllamav3_vram import estimate_html
+
+    model_draft = (state.get('model_draft') or '').strip()
+    model_dir_draft = None
+    if model_draft and model_draft.lower() != 'none':
+        path = Path(model_draft)
+        if not path.is_dir():
+            path = Path(shared.args.model_dir) / model_draft
+
+        model_dir_draft = path if path.is_dir() else None
+
+    return estimate_html(state.get('model_menu'), plan, model_dir_draft=model_dir_draft)
+
+
 def get_initial_exl3_preview():
     from modules.exllamav3_params import build_plan, format_plan
 
     loader = shared.args.loader or ''
     if loader not in ('ExLlamav3', 'ExLlamav3_HF'):
-        return 'Select the ExLlamav3 or ExLlamav3_HF loader to see the launch parameters.'
+        return NO_EXL3_LOADER
 
     plan = build_plan(shared.args, hf=(loader == 'ExLlamav3_HF'))
     return format_plan(plan, shared.model_name, get_exl3_components(shared.model_name))
 
 
+def get_initial_exl3_vram():
+    from modules.exllamav3_vram import format_html
+
+    loader = shared.args.loader or ''
+    if loader not in ('ExLlamav3', 'ExLlamav3_HF') or shared.model_name in ('None', None):
+        return format_html(None)
+
+    from modules.exllamav3_params import build_plan
+    plan = build_plan(shared.args, hf=(loader == 'ExLlamav3_HF'))
+    return _exl3_vram_html({'model_menu': shared.model_name, 'model_draft': shared.args.model_draft}, plan)
+
+
 def update_exl3_preview(*args):
     from modules.exllamav3_params import build_plan, format_plan
+    from modules.exllamav3_vram import format_html
 
     state = dict(zip(EXL3_PREVIEW_INPUTS, args))
     loader = state.get('loader')
     if loader not in ('ExLlamav3', 'ExLlamav3_HF'):
-        return 'Select the ExLlamav3 or ExLlamav3_HF loader to see the launch parameters.'
+        return NO_EXL3_LOADER, format_html(None)
 
     plan = build_plan(state, hf=(loader == 'ExLlamav3_HF'))
-    return format_plan(plan, state.get('model_menu'), get_exl3_components(state.get('model_menu')))
+    preview = format_plan(plan, state.get('model_menu'), get_exl3_components(state.get('model_menu')))
+
+    return preview, _exl3_vram_html(state, plan)
 
 
 def spec_type_visibility_updates(spec_type):
@@ -244,6 +281,8 @@ def create_ui():
                 'resulting calls before you press Load.'
             )
 
+            shared.gradio['exl3_vram_info'] = gr.HTML(value=get_initial_exl3_vram)
+
             with gr.Tabs():
                 with gr.Tab("Cache & batching"):
                     gr.Markdown('The cache is allocated in pages of 256 tokens, so ctx-size is rounded up to the next multiple of 256.')
@@ -251,6 +290,7 @@ def create_ui():
                         with gr.Column():
                             shared.gradio['exl3_max_chunk_size'] = gr.Number(label="max-chunk-size", precision=0, step=256, value=shared.args.exl3_max_chunk_size, info='Tokens processed per forward pass while ingesting a prompt. Default: 2048. Lower values make a new request interrupt ongoing generation for less time, at the cost of prompt speed.')
                             shared.gradio['exl3_max_batch_size'] = gr.Number(label="max-batch-size", precision=0, step=1, value=shared.args.exl3_max_batch_size, info='Upper bound on sequences generated in parallel. Default: 256. The generator lowers it on its own based on free cache space, so this is a ceiling, not a reservation.')
+                            shared.gradio['exl3_cache_slots'] = gr.Number(label="cache-slots", precision=0, step=1, value=shared.args.exl3_cache_slots, info='Recurrent state slots, i.e. how many sequences a recurrent model (Qwen3.5, GLM5-Next, anything with linear attention) can hold at once. Default: 16. Each slot costs VRAM and quantizing the cache does not shrink it, so lower this if such a model runs out of memory. No effect on plain transformers.')
                             shared.gradio['exl3_no_defrag'] = gr.Checkbox(label="no-defrag", value=shared.args.exl3_no_defrag, info='Stop the generator from periodically defragmenting the cache. Only useful for debugging.')
 
                         with gr.Column():
@@ -391,7 +431,7 @@ def create_event_handlers():
         shared.gradio[param].change(
             update_exl3_preview,
             gradio(*EXL3_PREVIEW_INPUTS),
-            gradio('exl3_preview_code'),
+            gradio('exl3_preview_code', 'exl3_vram_info'),
             show_progress=False)
 
     shared.gradio['download_model_button'].click(download_model_wrapper, gradio('custom_model_menu', 'download_specific_file'), gradio('model_status'), show_progress=True)

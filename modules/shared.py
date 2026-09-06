@@ -143,6 +143,7 @@ group.add_argument('--cfg-cache', action='store_true', help='Create an additiona
 group.add_argument('--exl3-max-chunk-size', type=int, default=2048, help='ExLlamaV3: maximum number of tokens processed in parallel during prompt ingestion.')
 group.add_argument('--exl3-max-batch-size', type=int, default=256, help='ExLlamaV3: maximum number of sequences the generator processes in parallel.')
 group.add_argument('--exl3-autosplit-batch-size', type=int, default=1, help='ExLlamaV3: batch size to account for when loading in autosplit mode.')
+group.add_argument('--exl3-cache-slots', type=int, default=16, help='ExLlamaV3: number of recurrent state slots in the cache, i.e. how many sequences a recurrent model can hold at once. Only affects models with recurrent/linear-attention layers, where each slot costs VRAM.')
 group.add_argument('--exl3-cpu-cache', type=float, default=0, help='ExLlamaV3: size in GB of a second-tier page cache in system RAM. 0 = disabled. Not supported with tensor parallelism.')
 group.add_argument('--exl3-recurrent-cache', type=float, default=4.0, help='ExLlamaV3: size in GB of the recurrent state cache in system RAM (only used by models with recurrent layers).')
 group.add_argument('--exl3-swa-full', action='store_true', help='ExLlamaV3: use a full cache for sliding-window attention layers instead of the recurrent mode with snapshots.')
