@@ -31,11 +31,6 @@ from modules.exllamav3_params import apply_config_options, build_plan, format_pl
 from modules.logging_colors import logger
 from modules.text_generation import get_max_prompt_length
 
-try:
-    import flash_attn
-except Exception:
-    logger.warning('Failed to load flash-attention due to the following error:', exc_info=True)
-
 
 class LogitBiasFilter(Filter):
     """Filter subclass that applies a static additive logit bias mask."""
@@ -204,6 +199,11 @@ class Exllamav3Model:
                     logger.warning(f"Draft model not found at {draft_path}, speculative decoding disabled.")
                 else:
                     draft_config = Config.from_directory(str(draft_path))
+                    if draft_spec['moe_cpu_layers']:
+                        draft_config.infer_params.moe_cpu_offload = draft_spec['moe_cpu_layers']
+                        if draft_spec['moe_cpu_threads']:
+                            draft_config.infer_params.moe_cpu_threads = draft_spec['moe_cpu_threads']
+
                     draft_model = Model.from_config(draft_config, swa_full=plan['swa_full'])
 
             # Recurrent models keep one past state per draft token, so the cache has to

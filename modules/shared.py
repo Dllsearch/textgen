@@ -152,6 +152,7 @@ group.add_argument('--exl3-moe-cpu-layers', type=int, default=0, help='ExLlamaV3
 group.add_argument('--exl3-moe-cpu-split', type=int, default=0, help='ExLlamaV3: run the tail N routed experts of every MoE layer on the CPU. Layer-split mode only. Mutually exclusive with --exl3-moe-cpu-layers.')
 group.add_argument('--exl3-moe-cpu-threads', type=int, default=0, help='ExLlamaV3: worker threads for MoE CPU offloading. 0 = auto.')
 group.add_argument('--exl3-ngram-ram', action='store_true', help='ExLlamaV3: load the n-gram embedding table (PLE models) into system RAM instead of streaming it from disk.')
+group.add_argument('--exl3-draft-moe-cpu-layers', type=int, default=0, help='ExLlamaV3: run the routed experts of the first N MoE layers of the draft model (or MTP head) on the CPU. Layer-split mode only.')
 group.add_argument('--exl3-tp-parallelism', type=str, default=None, help='ExLlamaV3: maximum parallelism per layer type in TP mode. Example: "attn=4, moe=2". Valid keys: attn, mlp, moe, linear, linear_attn.')
 group.add_argument('--exl3-moe-tensor-split', action='store_true', help='ExLlamaV3: in TP mode, use a tensor split for MoE layers rather than expert parallelism.')
 group.add_argument('--exl3-mtp', action='store_true', help="ExLlamaV3: use the main model's MTP head for speculative decoding.")
@@ -164,6 +165,7 @@ group.add_argument('--exl3-load-verbose', action='store_true', help='ExLlamaV3: 
 group.add_argument('--exl3-load-metrics', action='store_true', help='ExLlamaV3: print loader metrics after loading.')
 group.add_argument('--exl3-reserve-per-device', type=str, default=None, help='ExLlamaV3: VRAM to keep free per GPU, in GB. Comma-separated list. A negative value excludes the device. Example: 1,0.5')
 group.add_argument('--exl3-no-vision', action='store_true', help='ExLlamaV3: skip loading the vision component of multimodal models, saving its VRAM.')
+group.add_argument('--exl3-vision-pinned', action='store_true', help='ExLlamaV3: keep the vision component weights in pinned system RAM instead of VRAM.')
 group.add_argument('--exl3-vision-device', type=str, default=None, help='ExLlamaV3: load the vision component on a single device. Example: cuda:1 (or just 1).')
 
 # Gradio

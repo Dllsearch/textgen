@@ -18,11 +18,6 @@ from modules import shared
 from modules.exllamav3_params import apply_config_options, build_plan, format_plan
 from modules.logging_colors import logger
 
-try:
-    import flash_attn
-except Exception:
-    logger.warning('Failed to load flash-attention due to the following error:', exc_info=True)
-
 
 class Exllamav3HF(PreTrainedModel, GenerationMixin):
     def __init__(self, model_dir):

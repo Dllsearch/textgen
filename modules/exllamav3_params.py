@@ -213,11 +213,17 @@ def build_plan(source, hf=False):
     moe_cpu_threads = int(_get(source, 'exl3_moe_cpu_threads', 0) or 0)
     if moe_cpu_threads and (moe_cpu_layers or moe_cpu_split):
         config['moe_cpu_threads'] = moe_cpu_threads
-    elif moe_cpu_threads:
-        notes.append("moe-cpu-threads only applies with moe-cpu-layers or moe-cpu-split. Ignoring it.")
+    elif moe_cpu_threads and not _get(source, 'exl3_draft_moe_cpu_layers', 0):
+        notes.append("moe-cpu-threads only applies with moe-cpu-layers, moe-cpu-split or draft-moe-cpu-layers. Ignoring it.")
 
     if _get(source, 'exl3_ngram_ram', False):
         config['ngram_stream_from_disk'] = False
+
+    if _get(source, 'exl3_vision_pinned', False):
+        if _get(source, 'exl3_no_vision', False):
+            notes.append("vision-pinned has no effect with no-vision. Ignoring it.")
+        else:
+            config['vision_pinned'] = True
 
     # Model.load() options
     model_load = {'progressbar': True}
@@ -297,6 +303,26 @@ def build_plan(source, hf=False):
     if draft['model_draft'].lower() == 'none':
         draft['model_draft'] = ''
 
+    # MoE CPU offload for the draft side: the MTP head shares the main config and
+    # has its own budget there, a separate draft model gets its own config.
+    draft['moe_cpu_layers'] = 0
+    draft['moe_cpu_threads'] = 0
+    draft_moe_cpu_layers = int(_get(source, 'exl3_draft_moe_cpu_layers', 0) or 0)
+    if draft_moe_cpu_layers:
+        if not (draft['mtp'] or draft['model_draft']):
+            notes.append("draft-moe-cpu-layers needs a draft model or the MTP head. Ignoring it.")
+        elif enable_tp:
+            notes.append("draft-moe-cpu-layers requires layer-split mode. Ignoring it because enable_tp is set.")
+        elif moe_cpu_split:
+            notes.append("draft-moe-cpu-layers and moe-cpu-split are mutually exclusive (the split already covers the MTP head). Ignoring draft-moe-cpu-layers.")
+        else:
+            draft['moe_cpu_layers'] = draft_moe_cpu_layers
+            draft['moe_cpu_threads'] = moe_cpu_threads
+            if draft['mtp']:
+                config['draft_moe_cpu_offload'] = draft_moe_cpu_layers
+                if moe_cpu_threads:
+                    config['draft_moe_cpu_threads'] = moe_cpu_threads
+
     draft_load = {'progressbar': True}
     if split:
         draft_load['use_per_device'] = split
@@ -375,7 +401,8 @@ def apply_config_options(config, plan):
     """
     options = plan['config']
 
-    for key in ('moe_cpu_offload', 'moe_cpu_split', 'moe_cpu_threads', 'ngram_stream_from_disk'):
+    for key in ('moe_cpu_offload', 'moe_cpu_split', 'moe_cpu_threads', 'draft_moe_cpu_offload',
+                'draft_moe_cpu_threads', 'ngram_stream_from_disk', 'vision_pinned'):
         if key in options:
             setattr(config.infer_params, key, options[key])
 
@@ -483,6 +510,8 @@ def format_plan(plan, model_name=None, components=None):
         lines.append(f"# num_draft_tokens={draft['draft_max']}")
     elif draft['model_draft']:
         lines.append(f"draft_model = Model.from_config(Config.from_directory({draft['model_draft']!r}))")
+        if draft['moe_cpu_layers']:
+            lines.append(f"    draft_config.infer_params.moe_cpu_offload = {draft['moe_cpu_layers']!r}")
         lines.append(f"draft_model.load({_format_kwargs(draft['load'])})")
         lines.append(f"# num_draft_tokens={draft['draft_max']}")
 

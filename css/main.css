@@ -1671,6 +1671,14 @@ strong {
     color: #07ff07;
 }
 
+#vram-info .value.over {
+    color: #d00000;
+}
+
+.dark #vram-info .value.over {
+    color: #ff5a5a;
+}
+
 .message-attachments {
     display: flex;
     flex-wrap: wrap;

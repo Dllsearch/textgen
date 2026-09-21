@@ -48,6 +48,7 @@ EXL3_PREVIEW_INPUTS = (
     'exl3_moe_cpu_split',
     'exl3_moe_cpu_threads',
     'exl3_ngram_ram',
+    'exl3_draft_moe_cpu_layers',
     'exl3_tp_parallelism',
     'exl3_moe_tensor_split',
     'exl3_mtp',
@@ -60,6 +61,7 @@ EXL3_PREVIEW_INPUTS = (
     'exl3_load_metrics',
     'exl3_reserve_per_device',
     'exl3_no_vision',
+    'exl3_vision_pinned',
     'exl3_vision_device',
 )
 
@@ -319,7 +321,8 @@ def create_ui():
 
                         with gr.Column():
                             shared.gradio['exl3_moe_cpu_threads'] = gr.Number(label="moe-cpu-threads", precision=0, step=1, value=shared.args.exl3_moe_cpu_threads, info='Worker threads for the offloaded experts. 0 = auto (half your cores).')
-                            shared.gradio['exl3_ngram_ram'] = gr.Checkbox(label="ngram-ram", value=shared.args.exl3_ngram_ram, info='For PLE models such as Qwen3.8-Flash-Next: hold the n-gram embedding table in RAM (tens of GB) instead of reading rows from disk on every forward pass.')
+                            shared.gradio['exl3_draft_moe_cpu_layers'] = gr.Number(label="draft-moe-cpu-layers", precision=0, step=1, value=shared.args.exl3_draft_moe_cpu_layers, info='Like moe-cpu-layers, but for the draft model or MTP head, which have their own budget. 0 = disabled. Not combinable with moe-cpu-split, which already covers the MTP head.')
+                            shared.gradio['exl3_ngram_ram'] = gr.Checkbox(label="ngram-ram", value=shared.args.exl3_ngram_ram, info='For PLE models such as Qwen3.8-Flash-Next: hold the n-gram embedding table in RAM (tens of GB) instead of reading rows from disk. Decoding only reads a few KB per token, so streaming from an NVMe drive is usually just as fast and leaves the RAM for offloaded experts.')
 
                 with gr.Tab("Tensor parallelism"):
                     gr.Markdown('Applies only when **enable_tp** is checked in Main options. The backend (native/nccl) is set there too.')
@@ -348,6 +351,7 @@ def create_ui():
                     with gr.Row():
                         with gr.Column():
                             shared.gradio['exl3_no_vision'] = gr.Checkbox(label="no-vision", value=shared.args.exl3_no_vision, info='Skip the vision component entirely and free its VRAM. The model still works for text; image attachments stop working.')
+                            shared.gradio['exl3_vision_pinned'] = gr.Checkbox(label="vision-pinned", value=shared.args.exl3_vision_pinned, info='Keep the vision weights in pinned system RAM and compute from there, so images still work without spending VRAM on the tower. Image encoding gets slower.')
 
                         with gr.Column():
                             shared.gradio['exl3_vision_device'] = gr.Textbox(label="vision-device", value=shared.args.exl3_vision_device, info='Pin the vision component to one GPU. Example: cuda:1, or just 1. Empty = same split as the text model.')
@@ -426,13 +430,18 @@ def create_event_handlers():
         show_progress=False
     )
 
-    # Keep the ExLlamaV3 launch preview in sync
+    # Keep the ExLlamaV3 launch preview in sync. Selecting a model updates every
+    # input at once, so share one queue slot and only compute the latest state
+    # instead of running dozens of estimates side by side.
     for param in EXL3_PREVIEW_INPUTS:
         shared.gradio[param].change(
             update_exl3_preview,
             gradio(*EXL3_PREVIEW_INPUTS),
             gradio('exl3_preview_code', 'exl3_vram_info'),
-            show_progress=False)
+            show_progress=False,
+            concurrency_limit=1,
+            concurrency_id='exl3_preview',
+            trigger_mode='always_last')
 
     shared.gradio['download_model_button'].click(download_model_wrapper, gradio('custom_model_menu', 'download_specific_file'), gradio('model_status'), show_progress=True)
     shared.gradio['get_file_list'].click(partial(download_model_wrapper, return_links=True), gradio('custom_model_menu', 'download_specific_file'), gradio('model_status'), show_progress=True)
